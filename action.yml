@@ -1,5 +1,5 @@
-name: "Remove Solution Cells"
-description: "Finds all .ipynb files in the repo and removes cells tagged with 'solution'."
+name: "Convert Quarto Fenced Divs"
+description: "Converts Quarto fenced divs (:::{.callout-*}) in all .ipynb files to inline-styled HTML blocks for JupyterLab rendering."
 author: "Simon Dürr"
 inputs:
   python-version:
@@ -18,14 +18,8 @@ runs:
       with:
         python-version: ${{ inputs.python-version }}
 
-    - name: Install dependencies
+    - name: Run convert_fenced_divs script
       shell: bash
       run: |
-        python -m pip install --upgrade pip
-        pip install nbformat
-
-    - name: Run remove-solutions script
-      shell: bash
-      run: |
-        echo "Running remove-solutions.py..."
-        python ${GITHUB_ACTION_PATH}/remove-solutions.py
+        echo "Converting Quarto fenced divs to HTML..."
+        python ${GITHUB_ACTION_PATH}/convert_fenced_divs.py
