@@ -9,7 +9,10 @@ This script processes all .ipynb files recursively in the current directory.
 import glob
 import json
 import re
+import uuid
 from pathlib import Path
+
+import markdown
 
 # ── Callout type styles ──────────────────────────────────────────────────────
 
@@ -76,6 +79,212 @@ DEFAULT_STYLE = {
 }
 
 
+# ── Markdown converter instance ──────────────────────────────────────────────
+
+MD = markdown.Markdown(extensions=[
+    'tables',
+    'fenced_code',
+    'def_list',
+    'footnotes',
+    'attr_list',
+    'sane_lists',
+])
+
+# ── Inline style injection ──────────────────────────────────────────────────
+
+HEADING_STYLES = {
+    "h1": "font-size:1.4em;margin:0.6em 0 0.3em;font-weight:700;",
+    "h2": "font-size:1.25em;margin:0.5em 0 0.3em;font-weight:700;",
+    "h3": "font-size:1.1em;margin:0.4em 0 0.2em;font-weight:700;",
+    "h4": "font-size:1.0em;margin:0.4em 0 0.2em;font-weight:700;",
+    "h5": "font-size:0.95em;margin:0.3em 0 0.2em;font-weight:700;",
+    "h6": "font-size:0.9em;margin:0.3em 0 0.2em;font-weight:700;",
+}
+
+TAG_STYLES = {
+    "blockquote": "border-left:3px solid #ccc;margin:0.5em 0;padding:0.4em 1em;background:#f9f9f9;color:#555;",
+    "table": "border-collapse:collapse;width:100%;margin:0.5em 0;",
+    "th": "border:1px solid #ddd;padding:6px 10px;background:#f0f0f0;font-weight:700;text-align:left;",
+    "td": "border:1px solid #ddd;padding:6px 10px;",
+    "ul": "margin:0.4em 0;padding-left:1.5em;",
+    "ol": "margin:0.4em 0;padding-left:1.5em;",
+    "li": "margin:0.2em 0;",
+    "hr": "border:none;border-top:1px solid #ccc;margin:0.8em 0;",
+    "dl": "margin:0.5em 0;",
+    "dt": "font-weight:700;margin-top:0.4em;",
+    "dd": "margin-left:1.5em;margin-bottom:0.3em;",
+    "p": "margin:0.4em 0;",
+    "a": "color:#0366d6;",
+    "img": "max-width:100%;",
+    "del": "text-decoration:line-through;",
+}
+
+PRE_STYLE = "background:#2b2b2b;color:#f8f8f2;padding:10px 14px;border-radius:4px;overflow-x:auto;font-size:0.85em;margin:0.5em 0;"
+CODE_INLINE_STYLE = "background:#e0e0e0;padding:1px 4px;border-radius:3px;font-size:0.9em;"
+
+
+def add_inline_styles(html: str) -> str:
+    """Inject inline styles into HTML tags so they render in JupyterLab."""
+
+    # 1. Style <pre><code> blocks: style <pre>, force inner <code> to inherit
+    CODE_IN_PRE_STYLE = "color:#f8f8f2;background:transparent;padding:0;border-radius:0;font-size:inherit;"
+
+    def _style_pre_code(m):
+        pre_attrs = m.group(1) or ""
+        code_attrs = m.group(2) or ""
+        return f'<pre{pre_attrs} style="{PRE_STYLE}"><code{code_attrs} style="{CODE_IN_PRE_STYLE}">'
+
+    html = re.sub(r"<pre([^>]*)><code([^>]*)>", _style_pre_code, html)
+
+    # 2. Style standalone <code> (not inside <pre>)
+    #    Split on <pre>...</pre> blocks to avoid double-styling
+    parts = re.split(r"(<pre[^>]*>.*?</pre>)", html, flags=re.DOTALL)
+    for idx, part in enumerate(parts):
+        if not part.startswith("<pre"):
+            parts[idx] = re.sub(
+                r"<code(?![^>]*style=)([^>]*)>",
+                rf'<code\1 style="{CODE_INLINE_STYLE}">',
+                part,
+            )
+    html = "".join(parts)
+
+    # 3. Headings
+    for tag, sty in HEADING_STYLES.items():
+        html = re.sub(
+            rf"<{tag}(?![^>]*style=)([^>]*?)>",
+            rf'<{tag}\1 style="{sty}">',
+            html,
+        )
+
+    # 4. All other tags
+    for tag, sty in TAG_STYLES.items():
+        # Handle self-closing tags (e.g. <hr />, <img ... />) — inject style before the /
+        html = re.sub(
+            rf"<{tag}(?![^>]*style=)([^>]*?)\s*(/?)>",
+            rf'<{tag}\1 style="{sty}"\2>',
+            html,
+        )
+
+    # 5. Checkbox styling for task lists
+    html = re.sub(
+        r'<input(?![^>]*style=)([^>]*type="checkbox"[^>]*)>',
+        r'<input\1 style="margin-right:0.4em;">',
+        html,
+    )
+
+    return html
+
+
+# ── Math protection ──────────────────────────────────────────────────────────
+
+def _protect_math(text: str):
+    """Replace math expressions with UUID placeholders to protect from markdown parsing."""
+    placeholders = {}
+    # Display math first ($$...$$), including multiline
+    def _replace_display(m):
+        key = f"MATH_{uuid.uuid4().hex}"
+        placeholders[key] = m.group(0)
+        return key
+    text = re.sub(r"\$\$(.+?)\$\$", _replace_display, text, flags=re.DOTALL)
+    # Inline math ($...$) — avoid matching $$ or currency like $5
+    def _replace_inline(m):
+        key = f"MATH_{uuid.uuid4().hex}"
+        placeholders[key] = m.group(0)
+        return key
+    text = re.sub(r"(?<!\$)\$(?!\$)(.+?)(?<!\$)\$(?!\$)", _replace_inline, text)
+    return text, placeholders
+
+
+def _restore_math(html: str, placeholders: dict) -> str:
+    """Restore math expressions from placeholders."""
+    for key, original in placeholders.items():
+        html = html.replace(key, original)
+    return html
+
+
+# ── Quarto extension pre/post-processing ────────────────────────────────────
+
+def _preprocess_quarto_extensions(text: str):
+    """Handle Quarto/Pandoc extensions not supported by the markdown lib."""
+    placeholders = {}
+
+    # Strikethrough: ~~text~~ → placeholder (restore as <del> after)
+    def _replace_strike(m):
+        key = f"STRIKE_{uuid.uuid4().hex}"
+        placeholders[key] = f"<del>{m.group(1)}</del>"
+        return key
+    text = re.sub(r"~~(.+?)~~", _replace_strike, text)
+
+    # Subscript: H~2~O → H<sub>2</sub>O
+    text = re.sub(r"(?<!\~)~(?!\~)([^~]+?)~(?!~)", r"<sub>\1</sub>", text)
+
+    # Protect footnote references [^N] and definitions [^N]: from superscript regex
+    fn_placeholders = {}
+    def _protect_footnote(m):
+        key = f"FN_{uuid.uuid4().hex}"
+        fn_placeholders[key] = m.group(0)
+        return key
+    text = re.sub(r"\[\^[^\]]+\](?::)?", _protect_footnote, text)
+
+    # Superscript: E=mc^2^ → E=mc<sup>2</sup>
+    text = re.sub(r"(?<!\^)\^(?!\^)([^^]+?)\^(?!\^)", r"<sup>\1</sup>", text)
+
+    # Restore footnote syntax
+    for key, orig in fn_placeholders.items():
+        text = text.replace(key, orig)
+
+    return text, placeholders
+
+
+def _postprocess_task_lists(html: str) -> str:
+    """Convert [ ] and [x] markers in list items to checkbox HTML."""
+    html = re.sub(
+        r"<li([^>]*)>\s*\[ \]\s*",
+        r'<li\1><input type="checkbox" disabled> ',
+        html,
+    )
+    html = re.sub(
+        r"<li([^>]*)>\s*\[x\]\s*",
+        r'<li\1><input type="checkbox" checked disabled> ',
+        html,
+        flags=re.IGNORECASE,
+    )
+    return html
+
+
+# ── Body-to-HTML conversion ─────────────────────────────────────────────────
+
+def md_body_to_html(body_lines: list[str]) -> str:
+    """Convert markdown body lines to styled HTML."""
+    body_text = "\n".join(body_lines).strip()
+    if not body_text:
+        return ""
+
+    # 1. Protect math
+    body_text, math_placeholders = _protect_math(body_text)
+
+    # 2. Pre-process Quarto extensions
+    body_text, strike_placeholders = _preprocess_quarto_extensions(body_text)
+
+    # 3. Convert with markdown lib
+    html = MD.reset().convert(body_text)
+
+    # 4. Post-process task lists
+    html = _postprocess_task_lists(html)
+
+    # 5. Restore strikethrough placeholders
+    for key, replacement in strike_placeholders.items():
+        html = html.replace(key, replacement)
+
+    # 6. Add inline styles
+    html = add_inline_styles(html)
+
+    # 7. Restore math
+    html = _restore_math(html, math_placeholders)
+
+    return html
+
+
 def make_html_block(callout_type: str, title: str | None, body_lines: list[str], counters: dict) -> str:
     """Build an inline-styled HTML block for a callout."""
     style = CALLOUT_STYLES.get(callout_type, DEFAULT_STYLE)
@@ -91,18 +300,7 @@ def make_html_block(callout_type: str, title: str | None, body_lines: list[str],
     else:
         display_title = title or style["default_title"]
 
-    body_md = "\n".join(body_lines).strip()
-
-    # Convert minimal markdown in body to HTML (bold, italic, code, links)
-    body_html = body_md
-    body_html = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", body_html)
-    body_html = re.sub(r"\*(.+?)\*", r"<em>\1</em>", body_html)
-    body_html = re.sub(r"`(.+?)`", r'<code style="background:#e0e0e0;padding:1px 4px;border-radius:3px;font-size:0.9em;">\1</code>', body_html)
-    body_html = re.sub(r"\[(.+?)\]\((.+?)\)", r'<a href="\2">\1</a>', body_html)
-
-    # Turn blank-line-separated chunks into <p> tags
-    paragraphs = re.split(r"\n{2,}", body_html)
-    body_html = "".join(f"<p style='margin:0.4em 0;'>{p.strip()}</p>" for p in paragraphs if p.strip())
+    body_html = md_body_to_html(body_lines)
 
     html = (
         f'<div style="border-left:4px solid {style["border"]};background:{style["bg"]};'
