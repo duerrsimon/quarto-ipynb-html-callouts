@@ -305,12 +305,12 @@ def make_html_block(callout_type: str, title: str | None, body_lines: list[str],
     html = (
         f'<div style="border-left:4px solid {style["border"]};background:{style["bg"]};'
         f'border-radius:6px;margin:12px 0;overflow:hidden;">\n'
-        f'  <div style="background:{style["title_bg"]};color:{style["title_color"]};'
+        f'<div style="background:{style["title_bg"]};color:{style["title_color"]};'
         f'padding:8px 14px;font-weight:700;font-size:1.0em;">'
         f'{icon} {display_title}</div>\n'
-        f'  <div style="padding:10px 14px;color:#1a1a1a;font-size:0.95em;">\n'
-        f"    {body_html}\n"
-        f"  </div>\n"
+        f'<div style="padding:10px 14px;color:#1a1a1a;font-size:0.95em;">\n'
+        f"{body_html}\n"
+        f"</div>\n"
         f"</div>"
     )
     return html
